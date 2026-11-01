@@ -7,6 +7,8 @@ env:
   KERNEL_REPO: https://github.com/diphons/kernel_xiaomi_sm8250.git
   KERNEL_BRANCH: staging8
   ZIP_NAME: KernelSU-Next-LKM-RedmiK40-OrangeFox.zip
+  KERNEL_DIR: ${{ github.workspace }}/kernel_workspace
+  CLANG_DIR: ${{ github.workspace }}/clang/proton-clang
 
 jobs:
   build:
@@ -14,14 +16,26 @@ jobs:
     timeout-minutes: 180
 
     steps:
-      - name: Clone kernel source
+      - name: Clean workspace before build
+        shell: bash
         run: |
-          git clone --depth=1 --branch "${KERNEL_BRANCH}" "${KERNEL_REPO}" kernel_workspace
-          cd kernel_workspace
-          git rev-parse --short HEAD
+          set -euxo pipefail
+          rm -rf "${GITHUB_WORKSPACE}/kernel_workspace" "${GITHUB_WORKSPACE}/clang" "${GITHUB_WORKSPACE}/AnyKernel3"
+          mkdir -p "${GITHUB_WORKSPACE}/clang"
 
-      - name: Install dependencies
+      - name: Clone kernel source
+        shell: bash
         run: |
+          set -euxo pipefail
+          git clone --depth=1 --branch "${KERNEL_BRANCH}" "${KERNEL_REPO}" "${KERNEL_DIR}"
+          cd "${KERNEL_DIR}"
+          git rev-parse --short HEAD
+          git status --short || true
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -euxo pipefail
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             bc build-essential bison curl flex git libelf-dev \
@@ -29,34 +43,70 @@ jobs:
             ca-certificates zip unzip wget
 
       - name: Download Proton Clang
+        shell: bash
         run: |
-          mkdir -p "${GITHUB_WORKSPACE}/clang"
-          git clone --depth=1 https://github.com/kdrag0n/proton-clang.git "${GITHUB_WORKSPACE}/clang/proton-clang"
-          echo "${GITHUB_WORKSPACE}/clang/proton-clang/bin" >> "${GITHUB_PATH}"
+          set -euxo pipefail
+          git clone --depth=1 https://github.com/kdrag0n/proton-clang.git "${CLANG_DIR}"
+          echo "${CLANG_DIR}/bin" >> "${GITHUB_PATH}"
 
       - name: Install KernelSU-Next
+        shell: bash
         run: |
-          cd "${GITHUB_WORKSPACE}/kernel_workspace"
+          set -euxo pipefail
+          cd "${KERNEL_DIR}"
           curl -LSs https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh | bash -s main
 
-      - name: Enable LKM config for alioth
+      - name: Validate alioth config exists
+        shell: bash
         run: |
-          cd "${GITHUB_WORKSPACE}/kernel_workspace"
-          if [ ! -f "arch/arm64/configs/vendor/alioth_defconfig" ]; then
-            echo "Missing arch/arm64/configs/vendor/alioth_defconfig"
-            ls arch/arm64/configs/vendor || true
+          set -euxo pipefail
+          cd "${KERNEL_DIR}"
+
+          REQUIRED_CONFIG="arch/arm64/configs/vendor/xiaomi/alioth.config"
+          if [ ! -f "${REQUIRED_CONFIG}" ]; then
+            echo "Missing required config: ${REQUIRED_CONFIG}"
+            echo "Available vendor configs:"
+            find arch/arm64/configs/vendor -maxdepth 2 -type f | sort || true
             exit 1
           fi
 
-          echo "CONFIG_MODULES=y" >> arch/arm64/configs/vendor/alioth_defconfig
-          echo "CONFIG_MODULE_UNLOAD=y" >> arch/arm64/configs/vendor/alioth_defconfig
-          echo "CONFIG_MODVERSIONS=y" >> arch/arm64/configs/vendor/alioth_defconfig
-          echo "CONFIG_MODULE_SIG=n" >> arch/arm64/configs/vendor/alioth_defconfig
+          echo "Found config: ${REQUIRED_CONFIG}"
+
+      - name: Prepare alioth defconfig for LKM build
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd "${KERNEL_DIR}"
+
+          mkdir -p arch/arm64/configs/vendor
+          cp arch/arm64/configs/vendor/xiaomi/alioth.config arch/arm64/configs/vendor/alioth_defconfig
+
+          # Ensure module support is enabled for LKM
+          cat >> arch/arm64/configs/vendor/alioth_defconfig <<'EOF'
+          CONFIG_MODULES=y
+          CONFIG_MODULE_UNLOAD=y
+          CONFIG_MODVERSIONS=y
+          CONFIG_MODULE_SIG=n
+          EOF
+
+          echo "Prepared alioth_defconfig:"
+          grep -E 'CONFIG_MODULES|CONFIG_MODULE_UNLOAD|CONFIG_MODVERSIONS|CONFIG_MODULE_SIG' arch/arm64/configs/vendor/alioth_defconfig || true
+
+      - name: Clean previous build output
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd "${KERNEL_DIR}"
+          rm -rf out
+          make clean || true
+          make mrproper || true
 
       - name: Build kernel
+        shell: bash
         run: |
-          cd "${GITHUB_WORKSPACE}/kernel_workspace"
-          export PATH="${GITHUB_WORKSPACE}/clang/proton-clang/bin:${PATH}"
+          set -euxo pipefail
+          cd "${KERNEL_DIR}"
+          export PATH="${CLANG_DIR}/bin:${PATH}"
 
           make O=out ARCH=arm64 vendor/alioth_defconfig
           make -j"$(nproc)" O=out \
@@ -71,12 +121,32 @@ jobs:
             OBJDUMP=llvm-objdump \
             STRIP=llvm-strip
 
-      - name: Prepare TWRP/OrangeFox flashable zip
+      - name: Check kernel image was produced
+        shell: bash
         run: |
-          cd "${GITHUB_WORKSPACE}/kernel_workspace"
+          set -euxo pipefail
+          cd "${KERNEL_DIR}"
+
+          if [ -f "out/arch/arm64/boot/Image.gz-dtb" ]; then
+            echo "Kernel image found: out/arch/arm64/boot/Image.gz-dtb"
+          elif [ -f "out/arch/arm64/boot/Image.gz" ]; then
+            echo "Kernel image found: out/arch/arm64/boot/Image.gz"
+          elif [ -f "out/arch/arm64/boot/Image" ]; then
+            echo "Kernel image found: out/arch/arm64/boot/Image"
+          else
+            echo "Kernel image not found!"
+            find out -maxdepth 5 -type f | head -100 || true
+            exit 1
+          fi
+
+      - name: Package flashable zip with AnyKernel3
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd "${KERNEL_DIR}"
 
           if [ -d "AnyKernel3" ]; then
-            echo "AnyKernel3 exists"
+            echo "AnyKernel3 already exists"
           else
             git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git AnyKernel3
           fi
@@ -88,8 +158,7 @@ jobs:
           elif [ -f "out/arch/arm64/boot/Image" ]; then
             cp out/arch/arm64/boot/Image AnyKernel3/
           else
-            echo "Kernel image not found"
-            find out -maxdepth 5 -type f | head -100
+            echo "Kernel image missing for ZIP packaging"
             exit 1
           fi
 
@@ -101,7 +170,6 @@ jobs:
           # KernelSU-Next LKM
           # Flashable zip for recovery installation
 
-          # AnyKernel3 config
           do.devicecheck=1
           do.modules=0
           do.cleanup=1
@@ -109,10 +177,6 @@ jobs:
 
           device.name1=alioth
           device.name2=alioth
-
-          # Use standard AnyKernel3 behavior:
-          # It will process the kernel image automatically.
-          # No need to hardcode boot block path unless necessary.
 
           if [ -f "Image.gz-dtb" ]; then
             kernelfile="Image.gz-dtb"
@@ -132,12 +196,15 @@ jobs:
           cd AnyKernel3
           rm -f README.md 2>/dev/null || true
           rm -f .gitignore 2>/dev/null || true
-
           zip -r9 "../${ZIP_NAME}" . -x .git README.md .gitignore
 
-      - name: Upload artifact
+          cd ..
+          ls -lh "${ZIP_NAME}"
+
+      - name: Upload kernel ZIP as artifact
         uses: actions/upload-artifact@v4
         with:
-          name: KernelSU-Next-LKM-RedmiK40-OrangeFox
-          path: |
-            kernel_workspace/${{ env.ZIP_NAME }}
+          name: KernelSU-Next-LKM-RedmiK40-OrangeFox-${{ github.run_number }}
+          path: ${{ env.KERNEL_DIR }}/${{ env.ZIP_NAME }}
+          if-no-files-found: error
+          retention-days: 14
