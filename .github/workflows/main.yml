@@ -47,7 +47,7 @@ jobs:
         run: |
           set -euxo pipefail
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             build-essential bc bison curl flex git libelf-dev \
             libncurses5-dev libssl-dev llvm lld clang \
             gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
@@ -55,6 +55,13 @@ jobs:
           echo "CCACHE_DIR=${HOME}/.ccache" >> "${GITHUB_ENV}"
           ccache --zero-stats
           ccache --max-size=2G
+
+      - name: Validate kernel repo and branch
+        shell: bash
+        run: |
+          set -euxo pipefail
+          git ls-remote --heads "${KERNEL_REPO}" "refs/heads/${KERNEL_BRANCH}" >/dev/null
+          echo "Kernel repo and branch are reachable: ${KERNEL_REPO} (${KERNEL_BRANCH})"
 
       - name: Clone kernel source
         shell: bash
@@ -85,15 +92,20 @@ jobs:
           set -euxo pipefail
           cd "${KERNEL_DIR}"
 
-          REQUIRED_CONFIG="arch/arm64/configs/vendor/xiaomi/alioth.config"
-          if [ ! -f "${REQUIRED_CONFIG}" ]; then
-            echo "Missing required config: ${REQUIRED_CONFIG}"
-            echo "Available files:"
-            find arch/arm64/configs/vendor -maxdepth 2 -type f | sort || true
+          CANDIDATES=()
+          while IFS= read -r f; do
+            CANDIDATES+=("$f")
+          done < <(find arch -type f \( -iname 'alioth*.config' -o -path '*/vendor/*/alioth.config' -o -path '*/vendor/xiaomi/alioth.config' \) 2>/dev/null | sort)
+
+          if [ "${#CANDIDATES[@]}" -eq 0 ]; then
+            echo "Missing required alioth config. Searched under arch/ for alioth*.config or vendor/xiaomi/alioth.config"
+            find arch -maxdepth 5 -type f 2>/dev/null | grep -Ei 'alioth|xiaomi|vendor' | head -200 || true
             exit 1
           fi
 
-          echo "Config exists: ${REQUIRED_CONFIG}"
+          echo "Found alioth config candidates:"
+          printf '%s\n' "${CANDIDATES[@]}"
+          echo "KERNEL_CONFIG_SOURCE=${CANDIDATES[0]}" >> "${GITHUB_ENV}"
 
       - name: Prepare alioth defconfig for LKM
         shell: bash
@@ -102,7 +114,14 @@ jobs:
           cd "${KERNEL_DIR}"
 
           mkdir -p arch/arm64/configs/vendor
-          cp arch/arm64/configs/vendor/xiaomi/alioth.config arch/arm64/configs/vendor/alioth_defconfig
+
+          CONFIG_SOURCE="${KERNEL_CONFIG_SOURCE:-arch/arm64/configs/vendor/xiaomi/alioth.config}"
+          if [ ! -f "${CONFIG_SOURCE}" ]; then
+            echo "Configured source config does not exist: ${CONFIG_SOURCE}"
+            exit 1
+          fi
+
+          cp "${CONFIG_SOURCE}" arch/arm64/configs/vendor/alioth_defconfig
 
           # Fix invalid empty CPU mask entries that break Kconfig sync
           for sym in LITTLE BIG PRIME; do
@@ -141,7 +160,7 @@ jobs:
           export CCACHE_DIR="${HOME}/.ccache"
 
           # Build defconfig from sanitized vendor config
-          make O=out ARCH=arm64 vendor/alioth_defconfig || true
+          make O=out ARCH=arm64 vendor/alioth_defconfig
 
           # Remove any generated invalid values from generated .config
           for sym in LITTLE BIG PRIME; do
