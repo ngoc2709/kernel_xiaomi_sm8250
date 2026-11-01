@@ -21,14 +21,15 @@ jobs:
         sudo apt update
         sudo apt install -y bc build-essential libncurses5-dev binfmt-support libssl-dev ccache git curl wget unzip bison flex libelf-dev clang llvm lld
 
-    - name: Tải mã nguồn Clang (AOSP Clang 14)
+    - name: Tải trình biên dịch Clang (Proton Clang)
       run: |
         mkdir -p clang
         cd clang
-        # Đã sửa lỗi bằng cách dùng wget và chỉ định tên file rõ ràng
-        wget -O clang-r450784d.tar.gz "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/master-kernel-build-2022/clang-r450784d.tar.gz"
-        tar -xf clang-r450784d.tar.gz
-        echo "$(pwd)/bin" >> $GITHUB_PATH
+        # Chuyển sang tải Proton Clang từ nguồn ổn định trên GitHub để sửa lỗi 400 Bad Request
+        wget https://github.com
+        unzip master.zip
+        # Đưa đường dẫn thực thi vào môi trường hệ thống
+        echo "$(pwd)/proton-clang-master/bin" >> $GITHUB_PATH
 
     - name: Tải mã nguồn Kernel Xiaomi SM8250 (Nhánh staging8 cho HyperOS)
       run: |
