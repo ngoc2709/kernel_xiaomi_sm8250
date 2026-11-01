@@ -16,7 +16,7 @@ jobs:
     timeout-minutes: 180
 
     steps:
-      - name: Clean workspace before build
+      - name: Clean old workspace
         shell: bash
         run: |
           set -euxo pipefail
@@ -30,7 +30,6 @@ jobs:
           git clone --depth=1 --branch "${KERNEL_BRANCH}" "${KERNEL_REPO}" "${KERNEL_DIR}"
           cd "${KERNEL_DIR}"
           git rev-parse --short HEAD
-          git status --short || true
 
       - name: Install build dependencies
         shell: bash
@@ -54,7 +53,8 @@ jobs:
         run: |
           set -euxo pipefail
           cd "${KERNEL_DIR}"
-          curl -LSs https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh | bash -s main
+          # Use the branch that exists in KernelSU-Next repo
+          curl -LSs https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh | bash -s next
 
       - name: Validate alioth config exists
         shell: bash
@@ -65,14 +65,14 @@ jobs:
           REQUIRED_CONFIG="arch/arm64/configs/vendor/xiaomi/alioth.config"
           if [ ! -f "${REQUIRED_CONFIG}" ]; then
             echo "Missing required config: ${REQUIRED_CONFIG}"
-            echo "Available vendor configs:"
+            echo "Available files under vendor:"
             find arch/arm64/configs/vendor -maxdepth 2 -type f | sort || true
             exit 1
           fi
 
           echo "Found config: ${REQUIRED_CONFIG}"
 
-      - name: Prepare alioth defconfig for LKM build
+      - name: Prepare alioth defconfig for LKM
         shell: bash
         run: |
           set -euxo pipefail
@@ -81,7 +81,6 @@ jobs:
           mkdir -p arch/arm64/configs/vendor
           cp arch/arm64/configs/vendor/xiaomi/alioth.config arch/arm64/configs/vendor/alioth_defconfig
 
-          # Ensure module support is enabled for LKM
           cat >> arch/arm64/configs/vendor/alioth_defconfig <<'EOF'
           CONFIG_MODULES=y
           CONFIG_MODULE_UNLOAD=y
@@ -89,17 +88,17 @@ jobs:
           CONFIG_MODULE_SIG=n
           EOF
 
-          echo "Prepared alioth_defconfig:"
+          echo "Kernel module config enabled:"
           grep -E 'CONFIG_MODULES|CONFIG_MODULE_UNLOAD|CONFIG_MODVERSIONS|CONFIG_MODULE_SIG' arch/arm64/configs/vendor/alioth_defconfig || true
 
-      - name: Clean previous build output
+      - name: Clean previous build
         shell: bash
         run: |
           set -euxo pipefail
           cd "${KERNEL_DIR}"
           rm -rf out
           make clean || true
-          make mrproper || true
+          make mrproper || true || true
 
       - name: Build kernel
         shell: bash
@@ -108,10 +107,16 @@ jobs:
           cd "${KERNEL_DIR}"
           export PATH="${CLANG_DIR}/bin:${PATH}"
 
+          # Build config
           make O=out ARCH=arm64 vendor/alioth_defconfig
+
+          # Important: keep host tools on system GCC, only target compile uses clang/ld.lld
+          # This avoids the /lib64/ld-linux-x86-64.so.2 linker error from Proton Clang host tools
           make -j"$(nproc)" O=out \
             ARCH=arm64 \
             CC=clang \
+            HOSTCC=gcc \
+            HOSTCXX=g++ \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-android- \
             LD=ld.lld \
@@ -121,20 +126,20 @@ jobs:
             OBJDUMP=llvm-objdump \
             STRIP=llvm-strip
 
-      - name: Check kernel image was produced
+      - name: Check kernel image exists
         shell: bash
         run: |
           set -euxo pipefail
           cd "${KERNEL_DIR}"
 
           if [ -f "out/arch/arm64/boot/Image.gz-dtb" ]; then
-            echo "Kernel image found: out/arch/arm64/boot/Image.gz-dtb"
+            echo "Found kernel image: out/arch/arm64/boot/Image.gz-dtb"
           elif [ -f "out/arch/arm64/boot/Image.gz" ]; then
-            echo "Kernel image found: out/arch/arm64/boot/Image.gz"
+            echo "Found kernel image: out/arch/arm64/boot/Image.gz"
           elif [ -f "out/arch/arm64/boot/Image" ]; then
-            echo "Kernel image found: out/arch/arm64/boot/Image"
+            echo "Found kernel image: out/arch/arm64/boot/Image"
           else
-            echo "Kernel image not found!"
+            echo "Kernel image not found."
             find out -maxdepth 5 -type f | head -100 || true
             exit 1
           fi
@@ -158,7 +163,7 @@ jobs:
           elif [ -f "out/arch/arm64/boot/Image" ]; then
             cp out/arch/arm64/boot/Image AnyKernel3/
           else
-            echo "Kernel image missing for ZIP packaging"
+            echo "Kernel image missing for zip packaging"
             exit 1
           fi
 
@@ -201,7 +206,7 @@ jobs:
           cd ..
           ls -lh "${ZIP_NAME}"
 
-      - name: Upload kernel ZIP as artifact
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: KernelSU-Next-LKM-RedmiK40-OrangeFox-${{ github.run_number }}
