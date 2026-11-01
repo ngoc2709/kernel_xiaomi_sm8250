@@ -1,7 +1,12 @@
-name: Build KernelSU-Next LKM for Redmi K40
+name: Build KernelSU-Next LKM for Redmi K40 (TWRP/OrangeFox)
 
 on:
   workflow_dispatch:
+
+env:
+  KERNEL_REPO: https://github.com/diphons/kernel_xiaomi_sm8250.git
+  KERNEL_BRANCH: staging8
+  ZIP_NAME: KernelSU-Next-LKM-RedmiK40-OrangeFox.zip
 
 jobs:
   build:
@@ -9,10 +14,11 @@ jobs:
     timeout-minutes: 180
 
     steps:
-      - name: Checkout source
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
+      - name: Clone kernel source
+        run: |
+          git clone --depth=1 --branch "${KERNEL_BRANCH}" "${KERNEL_REPO}" kernel_workspace
+          cd kernel_workspace
+          git rev-parse --short HEAD
 
       - name: Install dependencies
         run: |
@@ -30,14 +36,14 @@ jobs:
 
       - name: Install KernelSU-Next
         run: |
-          cd "${GITHUB_WORKSPACE}"
+          cd "${GITHUB_WORKSPACE}/kernel_workspace"
           curl -LSs https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh | bash -s main
 
-      - name: Enable LKM config
+      - name: Enable LKM config for alioth
         run: |
-          cd "${GITHUB_WORKSPACE}"
+          cd "${GITHUB_WORKSPACE}/kernel_workspace"
           if [ ! -f "arch/arm64/configs/vendor/alioth_defconfig" ]; then
-            echo "Không tìm thấy arch/arm64/configs/vendor/alioth_defconfig"
+            echo "Missing arch/arm64/configs/vendor/alioth_defconfig"
             ls arch/arm64/configs/vendor || true
             exit 1
           fi
@@ -49,7 +55,7 @@ jobs:
 
       - name: Build kernel
         run: |
-          cd "${GITHUB_WORKSPACE}"
+          cd "${GITHUB_WORKSPACE}/kernel_workspace"
           export PATH="${GITHUB_WORKSPACE}/clang/proton-clang/bin:${PATH}"
 
           make O=out ARCH=arm64 vendor/alioth_defconfig
@@ -65,28 +71,73 @@ jobs:
             OBJDUMP=llvm-objdump \
             STRIP=llvm-strip
 
-      - name: Package zip
+      - name: Prepare TWRP/OrangeFox flashable zip
         run: |
-          cd "${GITHUB_WORKSPACE}"
-          if [ -f "out/arch/arm64/boot/Image.gz-dtb" ]; then
-            cp out/arch/arm64/boot/Image.gz-dtb .
-          elif [ -f "out/arch/arm64/boot/Image.gz" ]; then
-            cp out/arch/arm64/boot/Image.gz .
-          elif [ -f "out/arch/arm64/boot/Image" ]; then
-            cp out/arch/arm64/boot/Image .
+          cd "${GITHUB_WORKSPACE}/kernel_workspace"
+
+          if [ -d "AnyKernel3" ]; then
+            echo "AnyKernel3 exists"
           else
-            echo "Không tìm thấy file Image build output"
-            find out -maxdepth 5 -type f | head -50
+            git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git AnyKernel3
+          fi
+
+          if [ -f "out/arch/arm64/boot/Image.gz-dtb" ]; then
+            cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
+          elif [ -f "out/arch/arm64/boot/Image.gz" ]; then
+            cp out/arch/arm64/boot/Image.gz AnyKernel3/
+          elif [ -f "out/arch/arm64/boot/Image" ]; then
+            cp out/arch/arm64/boot/Image AnyKernel3/
+          else
+            echo "Kernel image not found"
+            find out -maxdepth 5 -type f | head -100
             exit 1
           fi
 
-          mkdir -p AnyKernel3
-          cp ./* AnyKernel3/ 2>/dev/null || true
+          cat > AnyKernel3/anykernel.sh <<'EOF'
+          #!/bin/bash
+          # AnyKernel3 script for TWRP/OrangeFox
+          # Redmi K40 (alioth)
+          #
+          # KernelSU-Next LKM
+          # Flashable zip for recovery installation
+
+          # AnyKernel3 config
+          do.devicecheck=1
+          do.modules=0
+          do.cleanup=1
+          do.cleanuponabort=0
+
+          device.name1=alioth
+          device.name2=alioth
+
+          # Use standard AnyKernel3 behavior:
+          # It will process the kernel image automatically.
+          # No need to hardcode boot block path unless necessary.
+
+          if [ -f "Image.gz-dtb" ]; then
+            kernelfile="Image.gz-dtb"
+          elif [ -f "Image.gz" ]; then
+            kernelfile="Image.gz"
+          elif [ -f "Image" ]; then
+            kernelfile="Image"
+          else
+            abort "Kernel image not found"
+          fi
+
+          ui_print "Using $kernelfile"
+          EOF
+
+          chmod 755 AnyKernel3/anykernel.sh
+
           cd AnyKernel3
-          zip -r9 ../KernelSU-Next-LKM-RedmiK40.zip . -x .git README.md
+          rm -f README.md 2>/dev/null || true
+          rm -f .gitignore 2>/dev/null || true
+
+          zip -r9 "../${ZIP_NAME}" . -x .git README.md .gitignore
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: KernelSU-Next-LKM-Alioth
-          path: KernelSU-Next-LKM-RedmiK40.zip
+          name: KernelSU-Next-LKM-RedmiK40-OrangeFox
+          path: |
+            kernel_workspace/${{ env.ZIP_NAME }}
