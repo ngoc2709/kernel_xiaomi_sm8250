@@ -52,7 +52,6 @@ jobs:
             libncurses5-dev libssl-dev llvm lld clang \
             gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
             ca-certificates zip unzip wget ccache
-
           echo "CCACHE_DIR=${HOME}/.ccache" >> "${GITHUB_ENV}"
           ccache --zero-stats
           ccache --max-size=2G
@@ -105,6 +104,11 @@ jobs:
           mkdir -p arch/arm64/configs/vendor
           cp arch/arm64/configs/vendor/xiaomi/alioth.config arch/arm64/configs/vendor/alioth_defconfig
 
+          # Fix invalid empty CPU mask entries that break Kconfig sync
+          for sym in LITTLE BIG PRIME; do
+            sed -i "/^CONFIG_${sym}_CPU_MASK=/d" arch/arm64/configs/vendor/alioth_defconfig || true
+          done
+
           cat >> arch/arm64/configs/vendor/alioth_defconfig <<'EOF'
           CONFIG_MODULES=y
           CONFIG_MODULE_UNLOAD=y
@@ -115,6 +119,9 @@ jobs:
           echo "Module-related config:"
           grep -E 'CONFIG_MODULES|CONFIG_MODULE_UNLOAD|CONFIG_MODVERSIONS|CONFIG_MODULE_SIG' arch/arm64/configs/vendor/alioth_defconfig || true
 
+          echo "Any CPU mask entries remaining:"
+          grep -nE 'CONFIG_(LITTLE|BIG|PRIME)_CPU_MASK' arch/arm64/configs/vendor/alioth_defconfig || true
+
       - name: Clean old build outputs
         shell: bash
         run: |
@@ -124,7 +131,7 @@ jobs:
           make clean || true
           make mrproper || true || true
 
-      - name: Build kernel
+      - name: Configure kernel
         shell: bash
         run: |
           set -euxo pipefail
@@ -133,7 +140,25 @@ jobs:
           export PATH="/usr/lib/ccache:${PATH}"
           export CCACHE_DIR="${HOME}/.ccache"
 
-          make O=out ARCH=arm64 vendor/alioth_defconfig
+          # Build defconfig from sanitized vendor config
+          make O=out ARCH=arm64 vendor/alioth_defconfig || true
+
+          # Remove any generated invalid values from generated .config
+          for sym in LITTLE BIG PRIME; do
+            sed -i "/^CONFIG_${sym}_CPU_MASK=/d" out/.config || true
+          done
+
+          # Regenerate config from sanitized state
+          make O=out ARCH=arm64 olddefconfig
+
+      - name: Build kernel
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd "${KERNEL_DIR}"
+
+          export PATH="/usr/lib/ccache:${PATH}"
+          export CCACHE_DIR="${HOME}/.ccache"
 
           make -j"$(nproc)" O=out \
             ARCH=arm64 \
