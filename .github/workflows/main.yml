@@ -3,12 +3,16 @@ name: Build KernelSU-Next LKM for Redmi K40 (TWRP/OrangeFox)
 on:
   workflow_dispatch:
 
+concurrency:
+  group: kernel-build-alioth-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   KERNEL_REPO: https://github.com/diphons/kernel_xiaomi_sm8250.git
   KERNEL_BRANCH: staging8
   ZIP_NAME: KernelSU-Next-LKM-RedmiK40-OrangeFox.zip
   KERNEL_DIR: ${{ github.workspace }}/kernel_workspace
-  CLANG_DIR: ${{ github.workspace }}/clang/proton-clang
+  KSU_DIR: ${{ github.workspace }}/KernelSU-Next
 
 jobs:
   build:
@@ -16,12 +20,42 @@ jobs:
     timeout-minutes: 180
 
     steps:
-      - name: Clean old workspace
+      - name: Checkout workflow repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Clean workspace
         shell: bash
         run: |
           set -euxo pipefail
-          rm -rf "${GITHUB_WORKSPACE}/kernel_workspace" "${GITHUB_WORKSPACE}/clang" "${GITHUB_WORKSPACE}/AnyKernel3"
-          mkdir -p "${GITHUB_WORKSPACE}/clang"
+          rm -rf "${GITHUB_WORKSPACE}/kernel_workspace" "${GITHUB_WORKSPACE}/KernelSU-Next" "${GITHUB_WORKSPACE}/AnyKernel3"
+          mkdir -p "${GITHUB_WORKSPACE}"
+
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.ccache
+          key: ccache-kernel-${{ runner.os }}-${{ env.KERNEL_BRANCH }}-${{ github.run_id }}
+          restore-keys: |
+            ccache-kernel-${{ runner.os }}-${{ env.KERNEL_BRANCH }}-
+            ccache-kernel-${{ runner.os }}-
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential bc bison curl flex git libelf-dev \
+            libncurses5-dev libssl-dev llvm lld clang \
+            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
+            ca-certificates zip unzip wget ccache
+
+          echo "CCACHE_DIR=${HOME}/.ccache" >> "${GITHUB_ENV}"
+          ccache --zero-stats
+          ccache --max-size=2G
 
       - name: Clone kernel source
         shell: bash
@@ -31,32 +65,22 @@ jobs:
           cd "${KERNEL_DIR}"
           git rev-parse --short HEAD
 
-      - name: Install build dependencies
+      - name: Clone KernelSU-Next source
         shell: bash
         run: |
           set -euxo pipefail
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            bc build-essential bison curl flex git libelf-dev \
-            libncurses5-dev libssl-dev llvm lld clang ccache \
-            ca-certificates zip unzip wget
+          git clone --depth=1 https://github.com/KernelSU-Next/KernelSU-Next.git "${KSU_DIR}"
+          cd "${KSU_DIR}"
+          git rev-parse --short HEAD
 
-      - name: Download Proton Clang
-        shell: bash
-        run: |
-          set -euxo pipefail
-          git clone --depth=1 https://github.com/kdrag0n/proton-clang.git "${CLANG_DIR}"
-          echo "${CLANG_DIR}/bin" >> "${GITHUB_PATH}"
-
-      - name: Install KernelSU-Next
+      - name: Install KernelSU-Next into kernel tree
         shell: bash
         run: |
           set -euxo pipefail
           cd "${KERNEL_DIR}"
-          # Use the branch that exists in KernelSU-Next repo
-          curl -LSs https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh | bash -s next
+          bash "${KSU_DIR}/kernel/setup.sh"
 
-      - name: Validate alioth config exists
+      - name: Validate alioth config
         shell: bash
         run: |
           set -euxo pipefail
@@ -65,12 +89,12 @@ jobs:
           REQUIRED_CONFIG="arch/arm64/configs/vendor/xiaomi/alioth.config"
           if [ ! -f "${REQUIRED_CONFIG}" ]; then
             echo "Missing required config: ${REQUIRED_CONFIG}"
-            echo "Available files under vendor:"
+            echo "Available files:"
             find arch/arm64/configs/vendor -maxdepth 2 -type f | sort || true
             exit 1
           fi
 
-          echo "Found config: ${REQUIRED_CONFIG}"
+          echo "Config exists: ${REQUIRED_CONFIG}"
 
       - name: Prepare alioth defconfig for LKM
         shell: bash
@@ -88,10 +112,10 @@ jobs:
           CONFIG_MODULE_SIG=n
           EOF
 
-          echo "Kernel module config enabled:"
+          echo "Module-related config:"
           grep -E 'CONFIG_MODULES|CONFIG_MODULE_UNLOAD|CONFIG_MODVERSIONS|CONFIG_MODULE_SIG' arch/arm64/configs/vendor/alioth_defconfig || true
 
-      - name: Clean previous build
+      - name: Clean old build outputs
         shell: bash
         run: |
           set -euxo pipefail
@@ -105,20 +129,19 @@ jobs:
         run: |
           set -euxo pipefail
           cd "${KERNEL_DIR}"
-          export PATH="${CLANG_DIR}/bin:${PATH}"
 
-          # Build config
+          export PATH="/usr/lib/ccache:${PATH}"
+          export CCACHE_DIR="${HOME}/.ccache"
+
           make O=out ARCH=arm64 vendor/alioth_defconfig
 
-          # Important: keep host tools on system GCC, only target compile uses clang/ld.lld
-          # This avoids the /lib64/ld-linux-x86-64.so.2 linker error from Proton Clang host tools
           make -j"$(nproc)" O=out \
             ARCH=arm64 \
             CC=clang \
             HOSTCC=gcc \
             HOSTCXX=g++ \
             CLANG_TRIPLE=aarch64-linux-gnu- \
-            CROSS_COMPILE=aarch64-linux-android- \
+            CROSS_COMPILE=aarch64-linux-gnu- \
             LD=ld.lld \
             AR=llvm-ar \
             NM=llvm-nm \
@@ -126,20 +149,22 @@ jobs:
             OBJDUMP=llvm-objdump \
             STRIP=llvm-strip
 
-      - name: Check kernel image exists
+          ccache --show-stats || true
+
+      - name: Validate output image
         shell: bash
         run: |
           set -euxo pipefail
           cd "${KERNEL_DIR}"
 
           if [ -f "out/arch/arm64/boot/Image.gz-dtb" ]; then
-            echo "Found kernel image: out/arch/arm64/boot/Image.gz-dtb"
+            echo "Kernel image found: out/arch/arm64/boot/Image.gz-dtb"
           elif [ -f "out/arch/arm64/boot/Image.gz" ]; then
-            echo "Found kernel image: out/arch/arm64/boot/Image.gz"
+            echo "Kernel image found: out/arch/arm64/boot/Image.gz"
           elif [ -f "out/arch/arm64/boot/Image" ]; then
-            echo "Found kernel image: out/arch/arm64/boot/Image"
+            echo "Kernel image found: out/arch/arm64/boot/Image"
           else
-            echo "Kernel image not found."
+            echo "Kernel image not found!"
             find out -maxdepth 5 -type f | head -100 || true
             exit 1
           fi
@@ -151,7 +176,7 @@ jobs:
           cd "${KERNEL_DIR}"
 
           if [ -d "AnyKernel3" ]; then
-            echo "AnyKernel3 already exists"
+            echo "AnyKernel3 exists"
           else
             git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git AnyKernel3
           fi
@@ -163,7 +188,7 @@ jobs:
           elif [ -f "out/arch/arm64/boot/Image" ]; then
             cp out/arch/arm64/boot/Image AnyKernel3/
           else
-            echo "Kernel image missing for zip packaging"
+            echo "Kernel image missing for packaging"
             exit 1
           fi
 
