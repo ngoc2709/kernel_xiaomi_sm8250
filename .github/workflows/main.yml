@@ -8,8 +8,8 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  KERNEL_REPO: https://github.com/diphons/kernel_xiaomi_sm8250.git
-  KERNEL_BRANCH: staging8
+  KERNEL_REPO: https://github.com/EmanuelCN/kernel_xiaomi_sm8250.git
+  KERNEL_BRANCH: staging
   ZIP_NAME: KernelSU-Next-LKM-RedmiK40-OrangeFox.zip
   KERNEL_DIR: ${{ github.workspace }}/kernel_workspace
   KSU_DIR: ${{ github.workspace }}/KernelSU-Next
