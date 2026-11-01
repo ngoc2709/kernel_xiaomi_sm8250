@@ -19,13 +19,14 @@ jobs:
     - name: Cài đặt các gói phụ thuộc
       run: |
         sudo apt update
-        sudo apt install -y bc build-essential libncurses5-dev binfmt-support libssl-dev ccache git curl unzip bison flex libelf-dev clang llvm lld
+        sudo apt install -y bc build-essential libncurses5-dev binfmt-support libssl-dev ccache git curl wget unzip bison flex libelf-dev clang llvm lld
 
     - name: Tải mã nguồn Clang (AOSP Clang 14)
       run: |
         mkdir -p clang
         cd clang
-        curl -LO https://googlesource.com
+        # Đã sửa lỗi bằng cách dùng wget và chỉ định tên file rõ ràng
+        wget -O clang-r450784d.tar.gz "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/master-kernel-build-2022/clang-r450784d.tar.gz"
         tar -xf clang-r450784d.tar.gz
         echo "$(pwd)/bin" >> $GITHUB_PATH
 
