@@ -13,7 +13,7 @@ jobs:
       - name: Setup Build Environment
         run: |
           sudo apt update
-          sudo apt install -y build-essential git curl bc cpio flex bison libssl-dev libelf-dev python3 python-is-python3
+          sudo apt install -y build-essential git curl bc cpio flex bison libssl-dev libelf-dev python3 python-is-python3 gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
 
       - name: Integrate KernelSU-Next
         run: |
@@ -33,18 +33,19 @@ jobs:
           export SUBARCH=arm64
           export CC=clang
           export CROSS_COMPILE=aarch64-linux-gnu-
+          export CLANG_TRIPLE=aarch64-linux-gnu-
           
-          # Cấu hình defconfig cho thiết bị (Thay alioth_defconfig nếu dùng máy khác)
-          make O=out ARCH=arm64 vendor/alioth_defconfig
+          # Cấu hình defconfig cho thiết bị alioth (Redmi K40 / Poco F3)
+          make O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- vendor/alioth_defconfig
           
-          # Kích hoạt kprobe cho KernelSU
+          # Kích hoạt kprobe cho KernelSU-Next
           echo "CONFIG_KPROBES=y" >> out/.config
           echo "CONFIG_KPROBE_EVENTS=y" >> out/.config
           echo "CONFIG_KSU_KPROBE_HOOKS=y" >> out/.config
           echo "CONFIG_KSU=y" >> out/.config
           
-          make O=out ARCH=arm64 olddefconfig
-          make O=out ARCH=arm64 -j$(nproc)
+          make O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
+          make O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc)
 
       - name: Upload Kernel Artifact
         uses: actions/upload-artifact@v4
