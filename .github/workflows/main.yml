@@ -95,10 +95,10 @@ jobs:
           CANDIDATES=()
           while IFS= read -r f; do
             CANDIDATES+=("$f")
-          done < <(find arch -type f \( -iname 'alioth*.config' -o -path '*/vendor/*/alioth.config' -o -path '*/vendor/xiaomi/alioth.config' \) 2>/dev/null | sort)
+          done < <(find arch -type f \( -iname 'alioth*config' -o -iname 'alioth*defconfig' -o -path '*/vendor/*/alioth*' \) 2>/dev/null | sort)
 
           if [ "${#CANDIDATES[@]}" -eq 0 ]; then
-            echo "Missing required alioth config. Searched under arch/ for alioth*.config or vendor/xiaomi/alioth.config"
+            echo "Missing required alioth config. Searched under arch/ for alioth*config or alioth*defconfig."
             find arch -maxdepth 5 -type f 2>/dev/null | grep -Ei 'alioth|xiaomi|vendor' | head -200 || true
             exit 1
           fi
@@ -115,20 +115,23 @@ jobs:
 
           mkdir -p arch/arm64/configs/vendor
 
-          CONFIG_SOURCE="${KERNEL_CONFIG_SOURCE:-arch/arm64/configs/vendor/xiaomi/alioth.config}"
+          CONFIG_SOURCE="${KERNEL_CONFIG_SOURCE:-arch/arm64/configs/vendor/alioth_defconfig}"
           if [ ! -f "${CONFIG_SOURCE}" ]; then
             echo "Configured source config does not exist: ${CONFIG_SOURCE}"
             exit 1
           fi
 
-          cp "${CONFIG_SOURCE}" arch/arm64/configs/vendor/alioth_defconfig
+          DEST="arch/arm64/configs/vendor/alioth_defconfig"
+          if [ "${CONFIG_SOURCE}" != "${DEST}" ]; then
+            cp "${CONFIG_SOURCE}" "${DEST}"
+          fi
 
           # Fix invalid empty CPU mask entries that break Kconfig sync
           for sym in LITTLE BIG PRIME; do
-            sed -i "/^CONFIG_${sym}_CPU_MASK=/d" arch/arm64/configs/vendor/alioth_defconfig || true
+            sed -i "/^CONFIG_${sym}_CPU_MASK=/d" "${DEST}" || true
           done
 
-          cat >> arch/arm64/configs/vendor/alioth_defconfig <<'EOF'
+          cat >> "${DEST}" <<'EOF'
           CONFIG_MODULES=y
           CONFIG_MODULE_UNLOAD=y
           CONFIG_MODVERSIONS=y
@@ -136,10 +139,10 @@ jobs:
           EOF
 
           echo "Module-related config:"
-          grep -E 'CONFIG_MODULES|CONFIG_MODULE_UNLOAD|CONFIG_MODVERSIONS|CONFIG_MODULE_SIG' arch/arm64/configs/vendor/alioth_defconfig || true
+          grep -E 'CONFIG_MODULES|CONFIG_MODULE_UNLOAD|CONFIG_MODVERSIONS|CONFIG_MODULE_SIG' "${DEST}" || true
 
           echo "Any CPU mask entries remaining:"
-          grep -nE 'CONFIG_(LITTLE|BIG|PRIME)_CPU_MASK' arch/arm64/configs/vendor/alioth_defconfig || true
+          grep -nE 'CONFIG_(LITTLE|BIG|PRIME)_CPU_MASK' "${DEST}" || true
 
       - name: Clean old build outputs
         shell: bash
@@ -159,15 +162,12 @@ jobs:
           export PATH="/usr/lib/ccache:${PATH}"
           export CCACHE_DIR="${HOME}/.ccache"
 
-          # Build defconfig from sanitized vendor config
           make O=out ARCH=arm64 vendor/alioth_defconfig
 
-          # Remove any generated invalid values from generated .config
           for sym in LITTLE BIG PRIME; do
             sed -i "/^CONFIG_${sym}_CPU_MASK=/d" out/.config || true
           done
 
-          # Regenerate config from sanitized state
           make O=out ARCH=arm64 olddefconfig
 
       - name: Build kernel
